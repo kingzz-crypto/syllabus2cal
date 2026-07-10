@@ -69,3 +69,54 @@
 
 ### Next step
 **Step 3:** Static landing page — headline, value prop, upload placeholder, footer. Copy + layout only, zero logic.
+
+---
+
+## Step 3 — Static landing page
+**Date:** 2026-07-10
+**Model:** Claude Sonnet 5
+
+### Done
+- Rewrote `app/page.tsx`: headline + one-line value prop, subtext (college/HS students), static upload-placeholder div (icon + copy, no logic), footer with dynamic copyright year + disclaimer.
+- Mobile-responsive via Tailwind breakpoints (`sm:`) on text size/padding; single-column flex layout works at all widths.
+- Kept in one file, no new components (page is short enough).
+- `app/layout.tsx` untouched — existing metadata already matches the value prop.
+- Verified: `npm run lint` ✅, `npm run build` ✅ (87.4 kB, unchanged).
+
+### Intentionally left out
+- No drag-drop/file-picker logic or client state (Step 4).
+- No API routes (Step 5+).
+- No design polish/animations, no dark mode (Step 15).
+- No SEO/OG image work beyond existing Step 1 metadata (Step 17).
+
+### Assumptions & decisions
+- Upload placeholder is a plain static `div` with an icon + copy, styled to look obviously interactive later, but not wired to any handler.
+
+### Next step
+**Step 4:** `UploadDropzone` component — drag-drop, file picker, client-side PDF/size validation, loading state.
+
+---
+
+## Step 4 — UploadDropzone component
+**Date:** 2026-07-10
+**Model:** Claude Sonnet 5
+
+### Done
+- `components/UploadDropzone.tsx` (client component): drag-drop (`onDrop`/`onDragOver`/`onDragLeave`), click-to-browse via hidden file input, keyboard-accessible (`role="button"`, Enter/Space).
+- Client-side validation only: rejects non-`application/pdf` files and files over 10 MB (per PLAN §3), shown as an inline error message.
+- Visual states: idle, drag-active (highlighted border), file-selected (shows name + size), and a reserved (unused) `isLoading` state/UI branch for Step 5 to wire up.
+- Swapped into `app/page.tsx` in place of the Step 3 static placeholder; rest of the landing page untouched.
+- Verified: `npm run lint` ✅, `npm run build` ✅ (88.5 kB, +1.1 kB for the component).
+
+### Intentionally left out
+- No API call / upload logic — selecting a file does not send it anywhere (Step 5).
+- No real loading/spinner UI wired up — state exists but nothing sets it yet.
+- No multi-file support (single syllabus per PLAN's free-tier model).
+- No paywall/usage-limit check yet (Step 12).
+
+### Assumptions & decisions
+- Validation checks `file.type === "application/pdf"` (MIME type) rather than filename extension — browsers reliably set this for PDFs; can add an extension fallback later if needed.
+- `isLoading` state added now (unused) so Step 5 only has to set it, not restructure the component.
+
+### Next step
+**Step 5:** `POST /api/extract` skeleton — accept multipart PDF, return hardcoded mock `Deadline[]` (contract-first).
