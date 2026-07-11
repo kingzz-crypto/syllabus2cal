@@ -120,3 +120,96 @@
 
 ### Next step
 **Step 5:** `POST /api/extract` skeleton — accept multipart PDF, return hardcoded mock `Deadline[]` (contract-first).
+
+---
+
+## Step 5 — `POST /api/extract` skeleton
+**Date:** 2026-07-10
+**Model:** Claude Sonnet 5
+
+### Done
+- `app/api/extract/route.ts`: accepts `multipart/form-data` with a `file` field, returns a hardcoded mock `ExtractionResult` (courseName + 3 deadlines spanning exam/assignment/project, one low-confidence, plus a sample warning) — proves the client↔server contract before Step 6 wires up real Gemini calls.
+- Server-side guards (never trust client-only validation): missing `file` field, wrong MIME type, empty file, file > 10 MB — each returns `400` with a JSON `{ error }` body.
+- Mock response is run through `ExtractionResultSchema.safeParse()` before being returned — the same Zod gate real Gemini output will use; returns `500` if it ever fails (defensive; shouldn't happen with a static mock).
+- `tests/api-extract.test.ts` (new): 6 Vitest tests calling the exported `POST` handler directly with constructed `Request`/`FormData` objects — valid PDF (200 + correct shape), missing field, wrong type, empty file, oversized file (all 400). Chosen over a live-server + curl test because backgrounding `next start` hangs this sandbox's `bash_tool` (known issue, see prior session) — this approach exercises the same code path and leaves permanent, fast regression coverage.
+- Verified: `npm run lint` ✅, `npm run build` ✅ (route registered as dynamic `ƒ /api/extract`), `vitest run` ✅ — **46/46 tests** (40 from Step 2 + 6 new).
+
+### Intentionally left out
+- No real Gemini call, no PDF content parsing (Step 6).
+- No client wiring — `UploadDropzone` still does not call this endpoint; not part of Step 5's stated scope.
+- No structured error-code taxonomy (bad PDF vs API-down vs empty-result) — explicitly Step 6.
+- No auth/rate-limiting/usage-counter check (Step 12).
+
+### Assumptions & decisions
+- Form field name chosen as `file` — whichever step wires up the client should POST under this key.
+- Kept the mock inline in the route rather than pre-creating `lib/gemini.ts`, since that file is explicitly Step 6's deliverable.
+- Flagging, not fixing: Vercel's serverless functions have historically had a request-body ceiling (~4.5 MB on the free tier) below the plan's 10 MB target. Not a Step 5 concern (this is a local dev-server observation), but worth a check at deploy/QA time.
+
+### Next step
+**Step 6:** `lib/gemini.ts` — real Gemini call with PDF, extraction prompt v1, Zod validation, error taxonomy (bad PDF / API down / empty result).
+
+---
+
+## Step 6 — `lib/gemini.ts`: real Gemini call, prompt v1, Zod validation, error taxonomy
+**Date:** 2026-07-10
+**Model:** Claude Sonnet 5
+
+### Done
+- Installed `@google/genai@2.11.0` — the current officially-recommended Gemini SDK (Google is migrating users off the older `@google/generative-ai`).
+- `lib/gemini.ts`:
+  - `buildExtractionPrompt()` — versioned v1 system instruction per PLAN §4: extracts all dated item types, never invents dates, resolves relative dates only with an explicit anchor (else → `warnings`), infers missing years as "low" confidence relative to today's date (injected dynamically), strict output-shape instructions.
+  - `callGemini()` — isolated network call (model: `gemini-2.5-flash`, inline-data PDF as base64, `responseMimeType: "application/json"`). Kept as a single small, swappable function.
+  - `extractDeadlinesFromPdf()` — orchestrates read→call→parse→validate, returns a typed `ExtractionOutcome` (`{success:true, result}` or `{success:false, error}`), never throws for expected failures.
+  - Error taxonomy (`ExtractionError`): `bad_pdf`, `api_error`, `empty_result`, `invalid_response` — covers missing/misconfigured API key, unreadable file, thrown SDK errors, blank response, non-JSON response, and schema-validation failures.
+  - Defensive JSON parsing strips a ```json fence if the model adds one anyway.
+  - Response still gated by `ExtractionResultSchema` (Step 2) — untouched, unmodified.
+- `app/api/extract/route.ts`: swapped the Step 5 mock for the real call; `bad_pdf` → 400, everything else → 502, both with `{ error, errorType }`. Request-validation branches (missing/wrong-type/empty/oversized file) are unchanged from Step 5.
+- `.env.example` added (`GEMINI_API_KEY=`, server-side only, with a comment linking to Google AI Studio).
+- Tests: `tests/gemini.test.ts` (8 new, one per error-taxonomy branch + happy path + code-fence stripping) and `tests/api-extract.test.ts` (rewritten — now mocks `lib/gemini` via `vi.hoisted`, since the route's behavior is no longer a static mock).
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **55/55** (40 + 8 + 7), `next lint` ✅, `next build` ✅.
+
+### Intentionally left out
+- Prompt hardening against real syllabi, scanned/image-PDF handling — explicitly Step 7.
+- Client wiring (`UploadDropzone` still doesn't call this endpoint).
+- `pdf-parse`/`unpdf` fallback mentioned in PLAN §2's tech table — not on the numbered roadmap yet; flagging its existence, not building it.
+- Usage/paywall check (Step 12).
+
+### Assumptions & decisions — please read before deploying
+- **Not tested against the live Gemini API.** This sandbox has no network path to `generativelanguage.googleapis.com` and no real `GEMINI_API_KEY`. All logic *I* control — prompt, error taxonomy, JSON parsing, Zod gate — is unit-tested with an injected fake `callGemini`. The one part that is **not** verified end-to-end is the actual SDK call shape in `callGemini()` (model name, the `config` object's exact fields, `response.text`) — written from current official docs, but the JS Gemini SDK moves fast. **Before relying on this for real, run one real upload locally with a real key and skim https://ai.google.dev/gemini-api/docs for `models.generateContent`.**
+- Model pinned to `gemini-2.5-flash` (a constant, easy to bump) — re-check free-tier pricing/availability periodically.
+- `bad_pdf` detection from thrown errors is a keyword-based heuristic (checks for "mime"/"unsupported"/"invalid file" in the message) — best-effort until Step 7 surfaces real failure text.
+- 10 MB PDF → ~13.3 MB base64 payload to Gemini; flagging (not solving) alongside the existing Step 5 note about Vercel's function body-size ceiling.
+
+### Next step
+**Step 7:** Prompt hardening — test against ≥5 real syllabi (requires a real `GEMINI_API_KEY`), iterate the prompt, handle scanned/image PDFs, document actual failure modes.
+
+---
+
+## Step 7 (partial) — Prompt hardening
+**Date:** 2026-07-10
+**Model:** Claude Sonnet 5
+
+### Done — the part achievable without live API access
+- Prompt v2 in `lib/gemini.ts`, hardened by reasoning (not live testing) about likely real-syllabus patterns:
+  - **Fixed a real gap in v1**: "no-class days" and "presentations" were listed as things to extract but never mapped to a `type` value — the model had nothing valid to put there. Now explicitly: map anything that isn't an obvious exam/quiz/assignment/project/reading to `"other"`.
+  - Added guidance for: numeric date format (assume month/day unless the document indicates otherwise), dates marked "TBD"/"to be announced" (omit + warn, same as unresolvable relative dates), multi-milestone projects (one entry per checkpoint, distinguishing titles), and clarified that `confidence` describes the *date's* certainty, not the whole entry.
+- `extractJsonPayload()` replaces the old fence-only stripper — now also recovers JSON if the model wraps it in commentary despite instructions (fenced block → first-brace/last-brace slice → raw text).
+- Added `maxOutputTokens: 8192` to the Gemini call — headroom against truncated JSON on syllabi with many deadlines.
+- Expanded `tests/gemini.test.ts`: a realistic multi-type mock response (quiz + project milestones + no-class day + optional reading + a warning), a commentary-wrapped-JSON recovery test, and 3 smoke tests on the prompt text itself (all 6 types named, today's date substituted, no-class-day guidance present).
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **60/60**, `next lint` ✅, `next build` ✅.
+
+### NOT done — blocked, not skipped
+The step's actual requirement — **"test against ≥5 real syllabi... document failure modes"** — could not be done here:
+- This sandbox has no network path to `generativelanguage.googleapis.com` (not in the allowed egress list), so **no live Gemini call is possible regardless of API key**.
+- No `GEMINI_API_KEY` has been provided.
+- No sample syllabus PDFs have been provided.
+All of the above are prerequisites outside what I can supply myself. What's marked "done" above is real, tested hardening of the parts under my control (prompt content, JSON recovery, error taxonomy) — it is **not** a substitute for observing how Gemini actually behaves on real documents.
+
+### To actually finish Step 7 (owner action needed)
+1. Get a `GEMINI_API_KEY` (https://aistudio.google.com/app/apikey), set it locally.
+2. Run this app somewhere with real network access (your machine, or Vercel) — not this sandbox.
+3. Upload ≥5 real syllabi, note what breaks (wrong type mapping, missed dates, truncated JSON, etc.), and bring the failures back for a real Step 7 iteration.
+   — Alternative: paste/upload a couple of real syllabi directly in this chat; I can read them myself and reason through what the prompt should produce, which won't replace live testing but can catch obvious prompt gaps before you spend API calls on it.
+
+### Next step
+Either: (a) come back with real Gemini output/failure notes so Step 7 can be finished for real, or (b) move on to **Step 8** (`DeadlineTable` — render results, highlight low-confidence rows) and treat Step 7 as revisitable later. Your call.
