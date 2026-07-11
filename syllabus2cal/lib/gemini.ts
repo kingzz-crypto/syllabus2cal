@@ -20,9 +20,13 @@
 import { GoogleGenAI } from "@google/genai";
 import { ExtractionResultSchema, type ExtractionResult } from "./types";
 
-// "gemini-2.0-flash or newer" per PROJECT_PLAN §2 — re-check current
-// free-tier flash model availability/pricing before relying on this.
-const GEMINI_MODEL = "gemini-2.5-flash";
+// Using the auto-updating alias, not a pinned dated model — a pinned
+// "gemini-2.5-flash" was confirmed LIVE (2026-07-11) to return 404 "no
+// longer available to new users" well before its officially announced
+// shutdown date. Google commits to 2 weeks' email notice before swapping
+// what this alias points to, which is more resilient than a hard pin that
+// can vanish without warning. Currently resolves to gemini-3.5-flash.
+const GEMINI_MODEL = "gemini-flash-latest";
 
 /** System instruction per PROJECT_PLAN §4. Versioned here — this is v2 (Step 7). */
 export function buildExtractionPrompt(today: string = new Date().toISOString().slice(0, 10)): string {

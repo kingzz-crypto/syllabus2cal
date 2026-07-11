@@ -213,3 +213,23 @@ All of the above are prerequisites outside what I can supply myself. What's mark
 
 ### Next step
 Either: (a) come back with real Gemini output/failure notes so Step 7 can be finished for real, or (b) move on to **Step 8** (`DeadlineTable` — render results, highlight low-confidence rows) and treat Step 7 as revisitable later. Your call.
+
+---
+
+## Step 7 — live-testing update: first real Gemini API result
+**Date:** 2026-07-11
+**Model:** Claude Sonnet 5 (patch based on the owner's real curl test)
+
+### What happened
+Owner ran the app locally with a real `GEMINI_API_KEY` and POSTed a real PDF to `/api/extract`. Got a clean `502` with:
+```
+{"error":"... \"This model models/gemini-2.5-flash is no longer available to new users...\"","errorType":"api_error"}
+```
+This is the first real signal from the live API, and it's a good one: multipart parsing, the actual Gemini network call, error classification, and the JSON error response all worked correctly end-to-end. Only the pinned model name was wrong — `gemini-2.5-flash` returned 404s for new callers starting ~2026-07-09, ahead of its officially announced (much later) shutdown date. Confirmed via Google's own AI developer forum — an active, days-old thread reports the exact same premature 404 for the same model.
+
+### Fix
+- `GEMINI_MODEL` changed from a pinned `"gemini-2.5-flash"` to the alias `"gemini-flash-latest"` (currently resolves to `gemini-3.5-flash`). Google commits to 2 weeks' email notice before swapping what this alias points to — meaningfully more resilient than a hard pin, given a hard pin already broke early once. Trade-off: behavior can shift under an app update outside our control; acceptable for this project's needs.
+- Re-verified: `vitest run` ✅ 60/60 (all Gemini tests use a mocked call, so this alone wouldn't have caught it — this bug was only reachable via the live-API path, which is exactly why Step 7's real-syllabus testing matters and can't be fully replaced by mocks).
+
+### Next step
+Owner: retry the same curl/PDF now that the model is fixed, report back what comes through.
