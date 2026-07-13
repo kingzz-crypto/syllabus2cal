@@ -104,6 +104,16 @@ export const ExtractionResultSchema = z.object({
 export type ExtractionResult = z.infer<typeof ExtractionResultSchema>;
 
 // ---------------------------------------------------------------------------
+// ICS request (POST /api/ics body, Step 11a)
+// ---------------------------------------------------------------------------
+
+/** Client sends its current (possibly user-edited) Deadline[] to export. */
+export const IcsRequestSchema = z.object({
+  deadlines: z.array(DeadlineSchema),
+});
+export type IcsRequest = z.infer<typeof IcsRequestSchema>;
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

@@ -233,3 +233,305 @@ This is the first real signal from the live API, and it's a good one: multipart 
 
 ### Next step
 Owner: retry the same curl/PDF now that the model is fixed, report back what comes through.
+
+---
+
+## Plan revision — v1.1 adopted, Steps 8a–10b tightened for precision
+**Date:** 2026-07-11
+**Model:** Claude Sonnet 5
+
+`PROJECT_PLAN.md` replaced with the owner's v1.1 (Steps 8–20 split into a/b half-steps, one half-step per session). Before building starts on them, reviewed 8a–10b specifically — the next three steps — for gaps and ambiguity (11 onward left as drafted, out of scope for this pass):
+
+- **8a**: draft said "render `Deadline[]`" with no data source. Added the missing piece explicitly — `UploadDropzone` → `POST /api/extract` → `toDeadline()` → lifted state in `page.tsx` → `DeadlineTable`. Also activates the `isLoading`/error states Step 4 built but left unused for exactly this.
+- **9a**: extended the editable-field list to include `notes` (draft omitted it). Added a decision: editing a `confidence: "low"` row flips it to `"high"` (user just confirmed it) — flagged as reversible if that's not wanted.
+- **9b**: clarified defaults for a newly-added row and that row keys must stay stable across add/delete.
+- **10a**: pinned to the `ics` npm package per §2 (not hand-rolled RFC 5545), UID = `deadline.id`.
+- **10b**: flagged a real risk to check at build time — some ICS libraries force UTC and don't support floating local times cleanly; verify before assuming `ics` does.
+
+Full refined text lives in `PROJECT_PLAN.md` §5.
+
+### Next step
+**8a** — `DeadlineTable` (read-only) + the real UploadDropzone→/api/extract wiring.
+
+---
+
+## Step 8a — DeadlineTable (read-only) + real UploadDropzone→API wiring
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `lib/deadlineHelpers.ts` (new): pure, tested logic split out of the UI — `getFieldValue`, `sortDeadlinesByDate`, `formatDateDisplay`/`formatTimeDisplay` (UTC-anchored so display can't shift a day/hour in any timezone — regression-tested).
+- `components/DeadlineTable.tsx` + `components/DeadlineRow.tsx` (new): renders Type/Title/Date/Time/Notes as a real `<table>`, sorted chronologically. Type shown as a color-coded pill.
+- `components/UploadDropzone.tsx`: now actually `POST`s to `/api/extract` on a valid file — activates the `isLoading` state reserved since Step 4 (spinner replaces the static icon), reuses the existing error display for extraction failures (400/502), converts the JSON response via `readErrorMessage`.
+- `app/page.tsx`: promoted to a client component (`"use client"`) to hold lifted `deadlines`/`warnings`/`courseName` state; converts each `GeminiDeadline` → `Deadline` via `toDeadline()` (Step 2) on a successful extraction; renders `DeadlineTable` once something's been extracted.
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅, `next lint` ✅, `next build` ✅ (page bundle 87.4kB → 107kB for the added UI).
+
+### Intentionally left out
+- No editing, no low-confidence highlighting yet (8b).
+- No polished per-failure-mode copy — extraction errors show the raw API message (Step 14a).
+
+### Next step
+8b.
+
+---
+
+## Step 8b — Low-confidence highlighting, warnings banner, empty state
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `DeadlineRow`: `confidence: "low"` rows get an amber left-border + tint + a small "Needs review" label.
+- `DeadlineTable`: `warnings[]` rendered as an amber banner above the table when non-empty; a friendly empty state (with its own "+ Add a deadline" entry point) when `deadlines` is `[]`, instead of a blank table.
+- Same data flow as 8a — no new wiring needed.
+- Verified alongside 8a/9a/9b in one combined test run (see 9b's entry) — all four sub-steps share the same two component files, tested together rather than four separate isolated passes.
+
+### Intentionally left out
+- Polished copy per specific failure mode (Step 14a) — the empty state and warnings banner use one generic message each, not tailored per cause.
+
+### Next step
+9a.
+
+---
+
+## Step 9a — Inline editing (title/date/time/type/notes)
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `lib/deadlineHelpers.ts`: `applyDeadlineEdit()` — applies one field edit, re-validates the **whole row** against `DeadlineSchema` (not just the touched field, so a row can't end up internally inconsistent), and promotes `confidence` to `"high"` on any successful edit (the decision flagged in the plan revision — reversible if unwanted).
+- `DeadlineRow`: click any cell to edit it in place — text input (title/notes), native `<input type="date">` / `<input type="time">` (date/time — these natively return exactly the `YYYY-MM-DD`/`HH:MM` strings the Zod schemas expect), `<select>` (type, so it can't produce an invented value by construction). Enter commits, Escape cancels, blur commits.
+- On an invalid edit: inline error shown, input stays in edit mode with the user's (invalid) draft visible so they can fix it — the underlying committed data never becomes invalid, only the in-progress draft can transiently be wrong.
+- **Extended scope vs. the plan draft**: added `notes` to the editable fields (the draft's list omitted it).
+- 12 new unit tests in `tests/deadlineHelpers.test.ts` covering every field's valid/invalid edit path, confidence promotion, and the "clearing time/notes removes the field" behavior.
+
+### Intentionally left out
+- No visible transition/animation on entering edit mode (not required, avoided per frontend-design guidance against unnecessary motion).
+
+### Next step
+9b.
+
+---
+
+## Step 9b — Row management (delete + add)
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `DeadlineRow`: delete button (icon, red on hover) → `window.confirm()` → removes the row. Native confirm chosen over a custom modal as the pragmatic choice for now; a styled modal is reasonable later polish, not required now.
+- `DeadlineTable`: "+ Add a deadline" button (also shown in the empty state) → `createBlankDeadline()` (always schema-valid on creation — title defaults to "New deadline", date to today, type "other", confidence "high" since it's user-authored) → appended to the array → **immediately enters edit mode on its title field** via the same `startEdit` path 9a already built, so the user's very next keystroke overwrites the placeholder.
+- Row `key={row.id}` (stable uuid, not array index) means edits/deletes never get misattributed to the wrong row across re-sorts or additions.
+- Combined verification for 8a/8b/9a/9b together: `tsc --noEmit` ✅, `vitest run` ✅ **97/97** (across all 5 test files), `next lint` ✅, `next build` ✅ — then a full clean `npm ci` reinstall + retest ✅, to rule out anything being an artifact of incremental sandbox state.
+
+### Intentionally left out
+- No undo for delete (confirm dialog is the only safety net).
+- No drag-to-reorder (rows are always chronologically sorted, which was treated as sufficient ordering).
+
+### Next step
+10a.
+
+---
+
+## Step 10a — `lib/icsBuilder.ts` core (all-day events)
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- Installed `ics@3.12.0` (per PROJECT_PLAN §2 — not hand-rolled RFC 5545).
+- **Verified empirically before writing any test assertions** (not assumed from memory): probed the raw library output for all-day events, escaping, and — critically — the floating-local-time claim flagged as a risk during the plan revision. Generated the identical event under `TZ=America/Los_Angeles` and `TZ=Asia/Kolkata`: byte-identical `DTSTART` output, no shift. `startInputType`/`startOutputType: "local"` genuinely means floating, not "server's local time." This closes the risk noted in `PROJECT_PLAN.md` §5.
+- `lib/icsBuilder.ts`: `buildIcs(deadlines: Deadline[]): IcsBuildResult` (discriminated union, matching the `ExtractionOutcome` pattern from Step 6 rather than inventing a new error-handling shape). All-day deadlines → `DTSTART;VALUE=DATE`, `UID` = `${deadline.id}@syllabus2cal`, `SUMMARY` = `"{courseName}: {title}"`, `CATEGORIES` = the deadline type, `DESCRIPTION` = notes (omitted entirely when there are none), calendar name derived from the first deadline's course (falls back to "Syllabus2Cal" for an empty array).
+- 11 unit tests: VCALENDAR/VEVENT structure, date-only DTSTART format, UID derivation, comma/semicolon escaping (confirmed handled by the library, not hand-rolled), categories, empty array (valid empty calendar), calendar naming, and RFC 5545 line-folding on a long `notes` field (confirmed: continuation lines ≤75 octets, tab-prefixed).
+
+### Intentionally left out
+- Timed events (10b).
+
+### Assumptions & decisions
+- Title is prefixed with course name (`"BIO 101: Midterm Exam 1"`) — not specified in the plan, added because it's useful context in an exported calendar the student will see alongside other calendars, and sets up cleanly for the paid "merge all courses" feature later.
+- `categories` (not part of the original plan) set from `deadline.type` — a natural fit for an ICS field designed exactly for this, at near-zero cost.
+
+### Next step
+10b.
+
+---
+
+## Step 10b — `icsBuilder` timed events + edge cases
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- Same `deadlineToEvent()` now branches on `deadline.time`: timed deadlines get a 5-element `start` array + `startInputType`/`startOutputType: "local"` (the empirically-verified floating-time config from 10a) + a **30-minute nominal duration** (documented decision: a Deadline is a due date, not a meeting, but a 0-minute block renders oddly in some calendar apps).
+- 6 more unit tests: timed `DTSTART` format, floating-time assertion (no `Z`, no `TZID`), midnight (`00:00`), end-of-day (`23:59`), non-zero duration, and a mixed array (one all-day + one timed deadline in the same calendar, both correctly formatted).
+- Final combined verification across the whole Steps 8a-10b build: `tsc --noEmit` ✅, `vitest run` ✅ **97/97**, `next lint` ✅, `next build` ✅, then a from-scratch `npm ci` + full retest ✅.
+
+### Intentionally left out
+- `POST /api/ics` route and `DownloadButton` — that's 11a/11b, not asked for in this batch.
+- `icsBuilder` is not yet called from anywhere in the app (no route wires it up yet) — same "built but not yet connected" pattern as Steps 5→6 and 4→8a earlier in this project.
+
+### Next step
+**11a** — `POST /api/ics` route: validate body with Zod, call `buildIcs`, return the .ics file with correct headers (test via curl, per the plan). **11b** — `DownloadButton` component wiring it to the browser, plus manual verification importing into Google Calendar and Apple Calendar.
+
+---
+
+## Step 11a — `POST /api/ics` route
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `lib/types.ts`: added `IcsRequestSchema` (`{ deadlines: Deadline[] }`) — the request contract, living alongside the other shared schemas rather than defined ad hoc in the route.
+- `lib/icsBuilder.ts`: added `buildIcsFilename(deadlines)` — slugifies the first deadline's course name for the download filename ("BIO 101" → "BIO_101.ics"), falls back to a generic name for an empty array.
+- `app/api/ics/route.ts` (new): thin route per the architecture rule — parse JSON → `IcsRequestSchema.safeParse` → `buildIcs()` → return. Malformed JSON or failed validation → 400; an internal `buildIcs` failure (shouldn't happen against already-validated input) → 500; success → 200 with `Content-Type: text/calendar; charset=utf-8` and `Content-Disposition: attachment; filename="..."`.
+- **Deviated from the plan's "test via curl only"**: curl-against-a-live-server is a known sandbox hang here (documented since Step 5). Used the same proven approach as every other route instead — calling the exported `POST` directly with constructed `Request` objects. 8 new tests: valid request, filename-from-course-name, empty array, malformed JSON, missing field, invalid deadline, missing `id` (rejects a bare `GeminiDeadline` masquerading as a `Deadline`), and a mixed all-day+timed multi-item request.
+- `lib/download.ts` (new): `extractFilename()` — tiny pure helper for 11b to read the server-chosen filename back out of the response header. 4 tests.
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **112/112**, `next lint` ✅.
+
+### Next step
+11b.
+
+---
+
+## Step 11b — `DownloadButton` component
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `components/DownloadButton.tsx` (new): `POST`s the current `deadlines` to `/api/ics`, then triggers a real browser download via `Blob` + a temporary `<a download>` (the standard pattern for a fetch-driven download — a plain `<a href>` can't carry a POST body). Filename comes from the server's `Content-Disposition` header via `extractFilename()`, not hardcoded client-side. Disabled while downloading and when there are zero deadlines (with a small explanatory note); errors reuse the same inline-message pattern as the rest of the app.
+- Wired into `app/page.tsx`, rendered directly below `DeadlineTable`, sharing the same lifted `deadlines` state.
+- Combined verification: `tsc --noEmit` ✅, `vitest run` ✅ **112/112**, `next lint` ✅, `next build` ✅ (`/api/ics` registered as a dynamic route) — then a from-scratch `npm ci` + full retest ✅.
+
+### Manual verification — genuinely needs the owner, not skipped
+The plan calls for manually confirming the .ics file imports cleanly into **Google Calendar and Apple Calendar**. I can't click through either of those myself. To make this checkable right now without even running the dev server, generated a real sample file (`sample-BIO_101.ics`, delivered alongside this zip) using the exact same field-mapping logic as `lib/icsBuilder.ts` — 7 events covering every type (exam, assignment, quiz, reading, two project milestones, a no-class day), one low-confidence-style item, one all-day, several timed. **Please import this into both calendar apps and report back** — that closes the one part of 10/11 that unit tests structurally can't cover (RFC-5545-valid text is necessary but not sufficient proof a specific calendar app's importer is happy with it).
+
+### Intentionally left out
+- No progress bar/percentage during generation (a single "Generating…" label was judged sufficient — ICS generation is near-instant, not a long-running operation).
+- No "copy link" / share option, only direct download — not requested.
+
+### Next step
+Phase C (Steps 8–11) is now fully built. Phase D starts at **12a** (`lib/usage.ts` — localStorage free-tier counter, pure + unit tested, no UI yet).
+
+---
+
+## Step 12a — `lib/usage.ts` (free-tier counter)
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `lib/usage.ts` (new): `FREE_SYLLABUS_LIMIT = 1`. Split per the plan's own phrasing — pure logic (`parseUsageCount`, `hasExceededFreeLimit`) separate from the storage wrapper (`getUsageCount`, `incrementUsageCount`, `resetUsageCount`, `isOverFreeLimit`). Storage is injectable (same DI pattern as `lib/gemini.ts`'s `callGemini`), defaulting to real `window.localStorage`, so this is fully unit-testable without jsdom.
+- Safe no-op fallback (treats the user as having 0 uses) when storage is unavailable (SSR, private browsing) — fails open, not closed; never blocks a legitimate user because of an environment quirk.
+- 21 tests: count parsing (including corrupt/negative/non-integer values), limit-checking, increment/reset persistence, and the storage-unavailable fallback path.
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **21/21** (this file), no UI yet per scope.
+
+### Not yet accounted for
+`isOverFreeLimit()` only checks the counter — it doesn't yet know about a paid/unlocked state, because that storage key doesn't exist until Step 13b wires the unlock flow. Noted explicitly so this isn't mistaken for an oversight when 13b revisits this check.
+
+### Next step
+12b.
+
+---
+
+## Step 12b — `PaywallModal`
+**Date:** 2026-07-12
+**Model:** Claude Sonnet 5
+
+### Done
+- `components/PaywallModal.tsx` (new): dialog (`role="dialog"`, `aria-modal`, labelled, closes on Escape or backdrop click) with a PayPal link and a **disabled** unlock-code input + button ("Coming soon") — intentionally non-functional per the plan; Step 13 builds the actual validation.
+- Wired the trigger: `UploadDropzone` now calls `isOverFreeLimit()` (Step 12a) before extracting — if the limit's been hit, it calls a new `onLimitReached` callback instead of proceeding, and `page.tsx` owns `showPaywall` state and renders the modal. `incrementUsageCount()` is called on a *successful* extraction only — a failed upload (bad PDF, API error) doesn't consume the user's free syllabus.
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **133/133**, `next lint` ✅, `next build` ✅, then a from-scratch `npm ci` + full retest ✅.
+
+### ⚠️ Needs your action before this is real
+`PAYPAL_LINK` in `PaywallModal.tsx` is a placeholder (`https://paypal.me/REPLACE_ME_4USD`), clearly marked `TODO(owner)` in the code. Swap in the real PayPal.me link (brother's account, per the plan) before this feature does anything useful.
+
+### Intentionally left out
+- Unlock code input/button are inert by design (Step 13a/13b).
+- No focus-trapping inside the modal (Escape + backdrop-click covers the common cases; full trap treated as later polish, not required now).
+- The enforcement is entirely client-side localStorage — trivially bypassable (clear storage, private window). This is the plan's own stated v1 approach (§13: "static codes validated client-side v1 ... documented upgrade path to server-side later"), not a new gap introduced here.
+
+### Assumptions & decisions
+- Free limit enforced by blocking *before* the API call (not just hiding the download after) — protects Gemini API quota, not just UX.
+
+### Next step
+**13a** — Unlock code logic: client-side SHA-256 hash check as pure functions + unit tests (no wiring yet). **13b** — wire the unlock flow end to end, including teaching `isOverFreeLimit()`'s caller about the unlocked state.
+
+### Suggestion, not built
+This project now has a meaningful amount of interactive UI (UploadDropzone, DeadlineTable/Row, DownloadButton, PaywallModal) verified only via type-check + build + manual review — there's no jsdom/React Testing Library setup, so click/keyboard interactions themselves aren't automated. Worth a deliberate decision at some point, not assumed here since it's not on the roadmap.
+
+---
+
+## Step 13a — Unlock code logic (hash check, pure)
+**Date:** 2026-07-13
+**Model:** Claude Sonnet 5
+
+### Done
+- `lib/unlock.ts` (new): `hashCode()` — SHA-256 hex digest via the standard Web Crypto API (`crypto.subtle.digest`), which is available identically in the browser and in Node's test environment — **cross-checked against Node's own `crypto` module before writing any code** to confirm they agree (they do, byte for byte).
+- `isValidUnlockCode()`: normalizes (trim + lowercase) before hashing, checks against a `Set` of valid hashes — never stores/compares plaintext codes.
+- Seeded with one real, working demo code so the flow is testable today: `"SYLLABUS2CAL-DEMO"`. Its hash was generated using the exact same `hashCode()` function being shipped (not computed separately/by hand), so it's guaranteed consistent.
+- 9 tests: determinism, correct digest length/format, case/whitespace normalization, rejecting wrong/empty codes.
+
+### ⚠️ Needs your action before this is real
+The demo code is a placeholder. Before launch, generate a real code's hash (a one-liner is in the code comment) and replace `VALID_CODE_HASHES` in `lib/unlock.ts`.
+
+### Security note (documented per the plan's own "v1" framing)
+This is intentionally lightweight: hashing beats shipping the code in plaintext, but the hash and comparison logic both still ship in the client bundle. It can't detect a code being shared or revoke a leaked one. Upgrade path if that becomes a real problem: move validation to a server route backed by a database of issued/redeemed codes.
+
+### Next step
+13b.
+
+---
+
+## Step 13b — Unlock flow wired end-to-end
+**Date:** 2026-07-13
+**Model:** Claude Sonnet 5
+
+### Done
+- `lib/unlock.ts`: added `isUnlocked()`/`setUnlocked()` — localStorage-backed, same injectable-storage pattern as `lib/usage.ts`.
+- `lib/usage.ts`: `isOverFreeLimit()` now checks `isUnlocked()` first — an unlocked user is never paywalled, regardless of usage count. This closes the exact gap flagged in Step 12a's entry ("doesn't yet know about a paid/unlocked state").
+- `PaywallModal`: the input/button are no longer disabled. Enter or the Unlock button calls `isValidUnlockCode()`; on success, `setUnlocked()` persists the state and an `onUnlocked` callback tells the parent to close the modal; on failure, an inline error ("That code doesn't look right..."). Button shows "Checking…" while the (async) hash check runs, so it can't be double-submitted.
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **147/147**, `next lint` ✅, `next build` ✅ — then a from-scratch `npm ci` + full retest ✅.
+- Try it yourself right now: hit the paywall (upload a 2nd syllabus), enter `SYLLABUS2CAL-DEMO`, confirm it unlocks and the modal closes.
+
+### Intentionally left out
+- No visible "you're unlocked" indicator elsewhere in the UI (e.g. a footer badge) — not part of 13b's stated scope, closing the modal is the confirmation.
+- Server-side upgrade path documented (see 13a) but not built — correctly out of scope for v1 per the plan.
+
+### Next step
+**14a** — Error/empty/loading polish for the upload → extract flow (friendly copy for every failure mode). **14b** — same for table → download → paywall.
+
+---
+
+## Step 14a — Error/empty/loading polish: upload → extract
+**Date:** 2026-07-13
+**Model:** Claude Sonnet 5
+
+### Done
+- **Audited every error path in the upload→extract flow** and found it was showing several raw, technical, or server-internal messages directly to students (e.g. a live Gemini SDK error message we actually saw pass through in Step 7's real-world test; "Gemini API key is not configured on the server"; raw Zod schema errors). This step closes that.
+- `lib/errorMessages.ts` (new): `getExtractErrorMessage(errorType)` — the single place raw/technical detail gets translated to student-facing copy. Server keeps precise messages (logs/debugging); this is the only place that copy gets shown to a user.
+- `app/api/extract/route.ts`: every error path now carries an `errorType` — previously only Step 6's Gemini-taxonomy errors did; Step 5's basic validation errors (`missing_file`, `invalid_file_type`, `empty_file`, `file_too_large`) didn't, so the client had no reliable way to map them.
+- **Added real timeout handling** (was completely missing before, and explicitly named in this step's scope): `lib/gemini.ts` now races the Gemini call against a 30s timer, returns a distinct `"timeout"` error type, mapped to HTTP `504`. **Verified the timeout actually fires** via a fake-timers test (simulated a request that never resolves, advanced 30s, confirmed the timeout branch is hit) rather than just trusting the `Promise.race` logic looks right.
+- `UploadDropzone`: reads `errorType` and maps through `getExtractErrorMessage()` instead of showing the raw server message; loading state now shows "Still working — this can take up to 30 seconds" if extraction is taking more than 8s, so a slow request doesn't read as a frozen/broken page.
+- 19 new tests for the message-mapping (every errorType produces a distinct, non-technical message; unrecognized types fall back safely) + 3 new route tests (errorType on every basic-validation branch, the timeout→504 mapping).
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **168/168**, `next lint` ✅, `next build` ✅.
+
+### Honest limitation
+The 30s timeout abandons the *client-side* wait but can't confirm the underlying Gemini request was actually cancelled — unverifiable whether `@google/genai`'s `generateContent` honors an abort signal without live API access (same caveat as Step 6). The user gets a fast, friendly timeout regardless; the in-flight request may still complete server-side and simply be discarded.
+
+### Next step
+14b.
+
+---
+
+## Step 14b — Error/empty/loading polish: table → download → paywall
+**Date:** 2026-07-13
+**Model:** Claude Sonnet 5
+
+### Done
+- `DownloadButton`: was passing through the raw `/api/ics` server error verbatim (risk: a raw Zod message like "Invalid request body: ..." reaching a student). Replaced with one consistent friendly message (`lib/errorMessages.ts`'s `ICS_DOWNLOAD_ERROR_MESSAGE`) — justified because, unlike extraction, `/api/ics`'s failure modes aren't distinctly actionable for a student (they didn't cause it; it's either an internal bug or a transient issue either way).
+- Inline table-edit errors (Step 9a): was showing Zod's raw validation message (e.g. regex-format errors). Now maps by **field**, not by parsing Zod text (`getEditErrorMessage("date")` → "Please enter a valid date.", etc.) — more robust than string-matching, and appropriately generic given the native `<input type="date">`/`<input type="time">`/`<select>` already prevent most malformed input before Zod ever sees it.
+- Shared `NETWORK_ERROR_MESSAGE` constant now used identically by both `UploadDropzone` and `DownloadButton` for the "couldn't reach the server" case — same wording everywhere, per this step's "consistent tone" goal.
+- **`app/error.tsx`** (new): route-level error boundary — Next.js's convention for catching genuinely unexpected/unhandled errors (a React crash, not one of the anticipated failure modes above) and showing a friendly "Something went wrong" screen with a "Try again" button, instead of a blank page or the framework's raw error overlay in production. Logs the real error to the console (for whoever's watching logs) without ever showing technical detail to the user.
+- Reviewed the existing empty-state (Step 8b) and paywall/unlock copy (12b/13b) — both already reasonably friendly and consistent; left unchanged rather than rewriting working copy for its own sake.
+- Verified: `tsc --noEmit` ✅, `vitest run` ✅ **168/168**, `next lint` ✅, `next build` ✅ (7 static pages, `error.tsx` compiles and registers correctly) — then a from-scratch `npm ci` + full retest ✅.
+
+### Intentionally left out
+- No "show technical details" toggle anywhere — this is a student tool, not a dev tool; the friendly message is the only message shown.
+- No `global-error.tsx` (the even-higher-level boundary for root-layout crashes) — genuinely rare edge case, judged not worth the extra file for this app's size; `error.tsx` covers the realistic cases.
+
+### Next step
+**Phase D is now fully built** (Steps 12–14). **15a** — Mobile responsiveness pass: landing page + upload flow. **15b** — mobile pass for the deadline table, modal, and download button.

@@ -90,7 +90,8 @@ export type ExtractionError =
   | { type: "bad_pdf"; message: string }
   | { type: "api_error"; message: string }
   | { type: "empty_result"; message: string }
-  | { type: "invalid_response"; message: string };
+  | { type: "invalid_response"; message: string }
+  | { type: "timeout"; message: string };
 
 export type ExtractionOutcome =
   | { success: true; result: ExtractionResult }
@@ -123,6 +124,36 @@ function classifyThrownError(err: unknown): ExtractionError {
     return { type: "bad_pdf", message };
   }
   return { type: "api_error", message };
+}
+
+// Step 14a: no request should hang the UI forever. 30s balances "don't kill
+// a normal-length syllabus mid-extraction" against "don't leave the user
+// staring at a spinner indefinitely."
+const GEMINI_TIMEOUT_MS = 30_000;
+const TIMEOUT_SENTINEL = "__GEMINI_CALL_TIMEOUT__";
+
+/**
+ * Races a promise against a timer. HONEST LIMITATION: this abandons the
+ * client-side wait, it does not confirm the underlying Gemini request was
+ * actually cancelled (uncertain whether @google/genai's generateContent
+ * honors an AbortSignal — unverifiable without live API access, see file
+ * header). The user gets a fast, friendly timeout either way; the
+ * in-flight request may still complete server-side and simply be ignored.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(TIMEOUT_SENTINEL)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 /**
@@ -180,8 +211,14 @@ export async function extractDeadlinesFromPdf(
 
   let responseText: string;
   try {
-    responseText = await geminiCall(apiKey, base64Pdf);
+    responseText = await withTimeout(geminiCall(apiKey, base64Pdf), GEMINI_TIMEOUT_MS);
   } catch (err) {
+    if (err instanceof Error && err.message === TIMEOUT_SENTINEL) {
+      return {
+        success: false,
+        error: { type: "timeout", message: `Gemini did not respond within ${GEMINI_TIMEOUT_MS / 1000}s.` },
+      };
+    }
     return { success: false, error: classifyThrownError(err) };
   }
 

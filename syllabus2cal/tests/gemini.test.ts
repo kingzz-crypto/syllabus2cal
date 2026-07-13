@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { extractDeadlinesFromPdf, buildExtractionPrompt } from "@/lib/gemini";
 
 const VALID_JSON = JSON.stringify({
@@ -160,6 +160,24 @@ describe("extractDeadlinesFromPdf", () => {
     });
     expect(outcome.success).toBe(false);
     if (!outcome.success) expect(outcome.error.type).toBe("bad_pdf");
+  });
+
+  it("times out and returns a 'timeout' error if Gemini never responds (Step 14a)", async () => {
+    vi.useFakeTimers();
+    try {
+      const neverResolves = new Promise<string>(() => {
+        /* intentionally never settles, simulating a hung request */
+      });
+      const outcomePromise = extractDeadlinesFromPdf(makeFile(), {
+        callGemini: () => neverResolves,
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const outcome = await outcomePromise;
+      expect(outcome.success).toBe(false);
+      if (!outcome.success) expect(outcome.error.type).toBe("timeout");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

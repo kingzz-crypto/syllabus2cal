@@ -1,5 +1,7 @@
 # Syllabus2Cal — Master Project Plan & Build Spec
-*Version 1.0 — Living document. Any AI or human continuing this project MUST read this file first, then STATUS.md for current progress.*
+*Version 1.1 — Living document. Any AI or human continuing this project MUST read this file first, then STATUS.md for current progress.*
+*Changelog v1.1: Steps 8–20 split into half-steps (a/b) to keep each build session small and token-cheap. Steps 1–7 unchanged.*
+*v1.1 refinement (Claude Sonnet 5, 2026-07-11): tightened 8a–10b for precision before building starts on them — see STATUS.md for the specific additions/decisions (client↔API wiring placement, edit-validation behavior, confidence-on-edit rule, icsBuilder library choice, a floating-time risk to verify). 11a onward left as drafted — out of scope for this pass.*
 
 ---
 
@@ -92,7 +94,7 @@ interface Deadline {
 
 ## 4. Gemini Extraction Prompt (spec)
 
-System instruction (tune during Step 6, keep versioned in `lib/gemini.ts`):
+System instruction (tuned in Step 6/7, versioned in `lib/gemini.ts`):
 - Extract ALL dated items: exams, quizzes, assignments, projects, readings, presentations, no-class days.
 - Output strict JSON array matching the Deadline schema (minus `id`).
 - Resolve relative dates ("Week 3 Friday") only when the syllabus provides an anchor; otherwise omit and report in a `warnings` array.
@@ -101,9 +103,10 @@ System instruction (tune during Step 6, keep versioned in `lib/gemini.ts`):
 
 ---
 
-## 5. Incremental Build Roadmap (one step ≈ one session, ~2–5% each)
+## 5. Incremental Build Roadmap (one step ≈ one session, ~1–3% each)
 
 Rules: implement ONLY the current step. Each step ends with: (a) what was done, (b) what was left out, (c) next step. Update STATUS.md.
+**From step 8 onward, each original step is split into two half-steps (a and b). One session = one half-step. Never do both halves in one session.**
 
 **Phase A — Foundation**
 1. Scaffold Next.js + TypeScript + Tailwind, deploy "hello world" to Vercel
@@ -117,23 +120,39 @@ Rules: implement ONLY the current step. Each step ends with: (a) what was done, 
 7. Prompt hardening: test against ≥5 real syllabi, iterate prompt, handle scanned/image PDFs (Gemini OCR), document failure modes
 
 **Phase C — Review & Export**
-8. `DeadlineTable`: render results, highlight low-confidence rows
-9. Table editing: inline edit title/date/time/type, delete row, add row
-10. `lib/icsBuilder.ts`: pure function Deadline[] → ics string; unit tests (all-day events, timed events, timezone handling — use floating local times)
-11. `POST /api/ics` + `DownloadButton`: download .ics; verify import into Google Calendar AND Apple Calendar
+- **8a.** `DeadlineTable` (read-only) **+ minimal real wiring**: on file select, `UploadDropzone` POSTs to `/api/extract` — finally activating the `isLoading` state Step 4 left reserved-but-unused for exactly this moment. Convert each returned `GeminiDeadline` → `Deadline` via `toDeadline()` (Step 2), lift `deadlines: Deadline[]` state into `page.tsx`, pass it to a new `components/DeadlineTable.tsx` that renders title/date/time/type/notes as a clean table. On a failed extraction (400/502), surface the error via UploadDropzone's existing error display (plain message only — polished per-failure-mode copy is Step 14a). No editing, no low-confidence highlighting yet.
+  *(Refined vs. the v1.1 draft: "render Deadline[] as a table" didn't say where the data comes from. Without this wiring there is nothing real to render — it's not a new feature, it's the missing plumbing the draft assumed.)*
+- **8b.** Low-confidence styling: highlight `confidence: "low"` rows, show `warnings[]` above the table, friendly empty-state message when `deadlines` is `[]`. Same data flow as 8a — no new wiring.
+- **9a.** Inline editing: edit **title/date/time/type/notes** in place *(added `notes` — the v1.1 draft's field list omitted it, but it's user-facing data same as the rest)*, each field validated against the Step 2 Zod schemas on commit. Invalid input shows an inline error and does **not** commit — the field keeps its last valid value until fixed.
+  **Decision:** editing any field on a `confidence: "low"` row flips it to `"high"` — the user has just confirmed/corrected it. (Flag now if you'd rather it stayed "low".)
+- **9b.** Row management: delete row (confirmation dialog first), add a new blank row (defaults: today's date, `type: "other"`, `confidence: "high"` since it's user-authored, not AI-inferred) which is immediately editable via 9a. Keep row keys/ordering stable across add/delete so edits never get misattributed to the wrong row.
+- **10a.** `lib/icsBuilder.ts` core, using the **`ics` npm package** (per §2 — not hand-rolled RFC 5545 strings): pure function `Deadline[] → ics string`, **all-day events only**. Unit tests: special-character escaping (commas/semicolons/backslashes/newlines) in title/notes, `UID` derived from `deadline.id` (already a uuid, from Step 2), correct `VCALENDAR`/`VEVENT` wrapper structure.
+- **10b.** `icsBuilder` timed events: `time`-bearing deadlines as floating local times (no UTC/timezone conversion — matches Step 2's timezone-naive `TimeSchema`). Edge cases: midnight (`00:00`), a long `notes` field (line-folding), one array mixing all-day + timed events in a single calendar. Unit tests for each.
+  **Risk to verify at build time:** some ICS libraries force UTC and don't cleanly support floating local times — confirm `ics`'s API actually supports this before assuming it does; fall back to manual `VEVENT` construction for the time fields if not.
+- **11a.** `POST /api/ics` route: validate body with Zod, call icsBuilder, return .ics with correct headers. Test via curl only.
+- **11b.** `DownloadButton` component: wire client → API → browser download; manually verify import into Google Calendar AND Apple Calendar.
 
 **Phase D — Monetization & Polish**
-12. `lib/usage.ts` + `PaywallModal`: localStorage counter, free = 1 syllabus, modal with PayPal link + manual unlock code input
-13. Unlock code mechanism: static codes validated client-side v1 (`SHA-256 hash check`), documented upgrade path to server-side later
-14. Error/empty/loading states polish: friendly copy for every failure mode
-15. Mobile responsiveness pass (most students will arrive from TikTok on phones — critical)
+- **12a.** `lib/usage.ts`: localStorage free-tier counter (pure helpers + storage wrapper) + unit tests. No UI.
+- **12b.** `PaywallModal`: UI shown on 2nd syllabus attempt — PayPal link, unlock-code input field (input not functional yet).
+- **13a.** Unlock code logic: client-side SHA-256 hash check as pure functions + unit tests. No wiring.
+- **13b.** Wire unlock flow: code input → validate → persist unlocked state in localStorage → paywall bypassed. Document server-side upgrade path.
+- **14a.** Error/empty/loading polish for the **upload → extract** flow: friendly copy for every failure mode (bad PDF, timeout, no dates, quota).
+- **14b.** Error/empty/loading polish for **table → download → paywall**: download failures, global error fallback, consistent tone.
+- **15a.** Mobile responsiveness: landing page + upload flow (most students arrive from TikTok on phones — critical).
+- **15b.** Mobile responsiveness: deadline table (scroll/stack strategy), modal, download button.
 
 **Phase E — Launch**
-16. Analytics: Vercel Analytics + Clarity snippet; define funnel events (upload_started, extract_success, ics_downloaded, paywall_shown, unlocked)
-17. SEO + meta: title/OG tags, social share image, favicon
-18. End-to-end QA with 10 real syllabi; fix top issues; write LAUNCH_CHECKLIST.md
-19. Launch: post Shorts + Reddit + Discord (marketing plan in first-revenue-app-plan.md)
-20. Post-launch: watch Clarity, fix top 3 friction points
+- **16a.** Install Vercel Analytics + Microsoft Clarity snippet; verify both receive data.
+- **16b.** Instrument funnel events: upload_started, extract_success, ics_downloaded, paywall_shown, unlocked.
+- **17a.** Meta basics: title/description/OG tags + favicon.
+- **17b.** Social share image + final SEO pass (verify previews on Twitter/WhatsApp/Discord).
+- **18a.** E2E QA round 1: run 5 real syllabi through the full flow; log every issue found (no fixing yet).
+- **18b.** E2E QA round 2: 5 more syllabi, fix top issues from both rounds, write LAUNCH_CHECKLIST.md.
+- **19a.** Launch prep: draft Shorts script + Reddit + Discord posts (marketing plan in first-revenue-app-plan.md).
+- **19b.** Launch: publish posts, monitor day-1 traffic and errors.
+- **20a.** Post-launch review: analyze Clarity sessions, identify top 3 friction points.
+- **20b.** Fix the top 3 friction points; write post-launch summary in STATUS.md.
 
 ---
 
@@ -148,6 +167,6 @@ Rules: implement ONLY the current step. Each step ends with: (a) what was done, 
 ## 7. Handoff Protocol (for any AI continuing this project)
 
 1. Read this file fully, then `STATUS.md` (current step, decisions log, known issues).
-2. Implement only the current step. Do not refactor unrelated code without approval.
+2. Implement only the current step (one half-step per session from 8a onward). Do not refactor unrelated code without approval.
 3. After each step append to STATUS.md: step #, date, done, left out, assumptions, next step.
 4. If a spec conflict arises, the types in `lib/types.ts` win; propose changes rather than silently diverging.
